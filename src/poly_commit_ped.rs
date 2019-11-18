@@ -1,10 +1,11 @@
 // Section 3.3 of the paper, PolyCommit_Ped
 
+use crate::polynomial::Polynomial;
+
 use amcl_wrapper::group_elem::{GroupElement, GroupElementVector};
 use amcl_wrapper::group_elem_g1::{G1, G1Vector};
 use amcl_wrapper::group_elem_g2::{G2, G2Vector};
 use amcl_wrapper::field_elem::{FieldElement, FieldElementVector};
-use crate::poly_commit_dl::Polynomial;
 use amcl_wrapper::extension_field_gt::GT;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -18,7 +19,9 @@ pub struct PublicKey {
 impl PublicKey {
     /// Create new public key. Done by trusted party. `degree` is called `t` in the paper.
     /// The paper says to create powers of only 1 group element, i.e. from G but since we need
-    /// type-3 pairings, so creating powers of element in G1 and G2. The exponent is kept same.
+    /// type-3 pairings, so creating powers of element in G1 and G2 as `g1` and `g2`. The exponent
+    /// is kept same. Similarly for `h`, elements in both groups G1 and G2 are created as `h1` and  
+    /// `h2`. Both `h1` and `h2` must have the same discrete log wrt. `g1` and `g2` respectively.
     pub fn new(degree: usize, label: &[u8]) -> Self {
         // secret key, should not be persisted,
         let alpha = FieldElement::random();
@@ -104,7 +107,7 @@ impl PolyCommit_Ped {
         let evaluation = poly.eval(i);
         // dividend = poly - evaluation
         let mut dividend = poly.clone();
-        dividend.0[0] -= &evaluation;
+        dividend[0] -= &evaluation;
         // divisor = x - i = -i + x
         let divisor = Polynomial(FieldElementVector::from(vec![-i, FieldElement::one()]));
         // witness_poly = dividend / divisor
@@ -113,7 +116,7 @@ impl PolyCommit_Ped {
         let evaluation_rand = rand_poly.eval(i);
         // dividend = rand_poly - evaluation
         let mut dividend_rand = rand_poly.clone();
-        dividend_rand.0[0] -= &evaluation_rand;
+        dividend_rand[0] -= &evaluation_rand;
         // divisor = x - i = -i + x
         let divisor_rand = Polynomial(FieldElementVector::from(vec![-i, FieldElement::one()]));
         // witness_poly_rand = dividend_rand / divisor_rand
@@ -123,13 +126,14 @@ impl PolyCommit_Ped {
         // Evaluate witness polynomials at `alpha`
         let mut bases = G1Vector::with_capacity(witness_poly.degree() + witness_poly_rand.degree());
         let mut exps = FieldElementVector::with_capacity(witness_poly.degree() + witness_poly_rand.degree());
+        // TODO: Too many clonings, refactor multi_scalar_mul_*
         for i in 0..=witness_poly.degree() {
             bases.push(pk.g1_powers[i].clone());
-            exps.push(witness_poly.0[i].clone());
+            exps.push(witness_poly[i].clone());
         }
         for i in 0..=witness_poly_rand.degree() {
             bases.push(pk.h1_powers[i].clone());
-            exps.push(witness_poly_rand.0[i].clone());
+            exps.push(witness_poly_rand[i].clone());
         }
         let witness = bases.multi_scalar_mul_const_time(&exps).unwrap();
         (evaluation, evaluation_rand, witness)
@@ -160,10 +164,11 @@ impl PolyCommit_Ped {
         let mut bases = G2Vector::with_capacity(2*degree);
         let mut exps = FieldElementVector::with_capacity(2*degree);
         for i in 0..=degree {
+            // TODO: Too many clonings, refactor multi_scalar_mul_*
             bases.push(pk.g2_powers[i].clone());
-            exps.push(poly.0[i].clone());
+            exps.push(poly[i].clone());
             bases.push(pk.h2_powers[i].clone());
-            exps.push(rand_poly.0[i].clone());
+            exps.push(rand_poly[i].clone());
         }
         bases.multi_scalar_mul_const_time(&exps).unwrap()
     }

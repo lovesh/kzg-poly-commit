@@ -1,5 +1,7 @@
 // Section 3.2 of the paper, PolyCommit_DL
 
+use crate::polynomial::Polynomial;
+
 use amcl_wrapper::group_elem::{GroupElement, GroupElementVector};
 use amcl_wrapper::group_elem_g1::{G1, G1Vector};
 use amcl_wrapper::group_elem_g2::{G2, G2Vector};
@@ -15,7 +17,8 @@ pub struct PublicKey {
 impl PublicKey {
     /// Create new public key. Done by trusted party. `degree` is called `t` in the paper.
     /// The paper says to create powers of only 1 group element, i.e. from G but since we need
-    /// type-3 pairings, so creating powers of element in G1 and G2. The exponent is kept same.
+    /// type-3 pairings, so creating powers of element in G1 and G2 as `g1` and `g2`. The exponent
+    /// is kept same. 
     pub fn new(degree: usize, label: &[u8]) -> Self {
         // secret key, should not be persisted,
         let alpha = FieldElement::random();
@@ -63,6 +66,7 @@ impl PolyCommit_DL {
         assert!(pk.is_degree_supported(poly.degree()));
         let mut bases = G2Vector::with_capacity(poly.degree());
         for i in 0..=poly.degree() {
+            //TODO: refactor multi_scalar_mul_* to avoid cloning
             bases.push(pk.g2_powers[i].clone());
         }
         bases.multi_scalar_mul_const_time(&poly.0).unwrap()
@@ -81,7 +85,7 @@ impl PolyCommit_DL {
         let evaluation = poly.eval(i);
         // dividend = poly - evaluation
         let mut dividend = poly.clone();
-        dividend.0[0] -= &evaluation;
+        dividend[0] -= &evaluation;
         // divisor = x - i = -i + x
         let divisor = Polynomial(FieldElementVector::from(vec![-i, FieldElement::one()]));
         // witness_poly = dividend / divisor
@@ -120,89 +124,9 @@ impl PolyCommit_DL {
     }
 }
 
-// TODO: Move `Polynomial` to separate module.
-/// Polynomial represented with coefficients in a vector. The ith element of the vector is the coefficient of the ith degree term.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Polynomial(pub FieldElementVector);
-
-impl Polynomial {
-    pub fn degree(&self) -> usize {
-        self.0.len() - 1
-    }
-
-    /// Polynomial is zero if all coefficients are 0
-    pub fn is_zero(&self) -> bool {
-        self.0.iter().all(|coeff| coeff.is_zero())
-    }
-
-    // Evaluate polynomial at given `x`
-    pub fn eval(&self, x: &FieldElement) -> FieldElement {
-        if x.is_zero() {
-            self.0[0].clone()
-        } else {
-            let exp = FieldElementVector::new_vandermonde_vector(x, self.degree() + 1);
-            self.0.inner_product(&exp).unwrap()
-        }
-    }
-
-    /// Divides 2 polynomials i.e. `dividend` / `divisor` using long division. Assumes `divisor` divides the `dividend` exactly so no remainder
-    pub fn long_division(dividend: &Self, divisor: &Self) -> Self {
-        assert!(!divisor.is_zero());
-        assert!(!divisor.0[divisor.degree()].is_zero());
-
-        let mut remainder: Polynomial = dividend.clone();
-        let mut quotient = vec![];
-        // Inverse of coefficient of highest degree of the divisor polynomial. This will be multiplied
-        // with the coefficient of highest degree of the remainder.
-        let highest_degree_coeff_inv = divisor.0[divisor.degree()].inverse();
-        let rem_degree = dividend.degree();
-        let div_degree = divisor.degree();
-        let quo_degree = dividend.degree() - div_degree;
-        for i in (div_degree..=rem_degree).rev() {
-            if remainder.0[i].is_zero() {
-                quotient.push(FieldElement::zero());
-                continue
-            }
-
-            let q = &highest_degree_coeff_inv * &remainder.0[i];
-            for j in 0..div_degree {
-                remainder.0[i-div_degree+j] -= &(&divisor.0[j] * &q);
-            }
-            quotient.push(q);
-        }
-        // Remove trailing 0s since the quotient has degree `quo_degree`
-        quotient.drain(quo_degree+1..);
-        // The coefficients of the quotient polynomial were computed from highest to lowest degree.
-        quotient.reverse();
-        Polynomial(FieldElementVector::from(quotient))
-    }
-
-    // TODO: Add a multiply method
-
-    // TODO: Add a coefficients method to avoid using self.0
-    /// Return a randomly chosen polynomial (each coefficient is randomly chosen) of degree `degree`.
-    pub fn random(degree: usize) -> Self {
-        Self(FieldElementVector::random(degree + 1)) // +1 for constant term
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_poly() {
-        let degree = 10;
-        let poly1 = Polynomial(FieldElementVector::random(degree + 1));
-        assert!(!poly1.is_zero());
-
-        let poly2 = Polynomial(FieldElementVector::new(degree + 1));
-        assert!(poly2.is_zero());
-
-        let coeff_3 = FieldElementVector::new(degree + 1);
-        let poly3 = Polynomial(coeff_3.clone());
-
-    }
 
     #[test]
     fn test_commit_verify() {
@@ -213,97 +137,6 @@ mod tests {
             let commitment = PolyCommit_DL::commit(&poly, &pk);
             assert!(PolyCommit_DL::verify_commitment(&poly, &commitment, &pk))
         }
-    }
-
-    #[test]
-    fn test_poly_long_div() {
-        // x^2 - 1 / x + 1 = x - 1
-        // dividend = -1 + x^2
-        let c1 = vec![FieldElement::minus_one(), FieldElement::zero(), FieldElement::one()];
-        let dividend = Polynomial(FieldElementVector::from(c1));
-        // divisor = 1 + x
-        let c2 = vec![FieldElement::one(), FieldElement::one()];
-        let divisor = Polynomial(FieldElementVector::from(c2));
-        let quotient = Polynomial::long_division(&dividend, &divisor);
-        println!("Quotient={:?}", &quotient);
-        // quotient = -1 + x
-        assert_eq!(quotient.degree(), 1);
-        assert_eq!(quotient.0[0], FieldElement::minus_one());
-        assert_eq!(quotient.0[1], FieldElement::one());
-
-        let quotient = Polynomial::long_division(&dividend, &quotient);
-        println!("Quotient={:?}", &quotient);
-        // quotient = 1 + x
-        assert_eq!(quotient.degree(), 1);
-        assert_eq!(quotient.0[0], FieldElement::one());
-        assert_eq!(quotient.0[1], FieldElement::one());
-
-        // 2x^2 + 3x + 1 / x + 1 = 2x + 1
-        // dividend = 1 + 3x + 2x^2
-        let c1 = vec![FieldElement::one(), FieldElement::from(3u64), FieldElement::from(2u64)];
-        let dividend = Polynomial(FieldElementVector::from(c1));
-        // divisor = 1 + x
-        let c2 = vec![FieldElement::one(), FieldElement::one()];
-        let divisor = Polynomial(FieldElementVector::from(c2));
-        let quotient = Polynomial::long_division(&dividend, &divisor);
-        println!("Quotient={:?}", &quotient);
-        // quotient = 1 + 2x
-        assert_eq!(quotient.degree(), 1);
-        assert_eq!(quotient.0[0], FieldElement::one());
-        assert_eq!(quotient.0[1], FieldElement::from(2u64));
-
-        // 4x - 4 / x - 1 = 4
-        // dividend = -4 + 4x
-        let c1 = vec![-FieldElement::from(4u64), FieldElement::from(4u64)];
-        let dividend = Polynomial(FieldElementVector::from(c1));
-        // divisor = -1 + x
-        let c2 = vec![FieldElement::minus_one(), FieldElement::one()];
-        let divisor = Polynomial(FieldElementVector::from(c2));
-        let quotient = Polynomial::long_division(&dividend, &divisor);
-        println!("Quotient={:?}", &quotient);
-
-        // quotient = 4
-        assert_eq!(quotient.degree(), 0);
-        assert_eq!(quotient.0[0], FieldElement::from(4u64));
-
-        // x^5 + x^3 + 4x^2 + 4 / x^2 + 1 = x^3 + 4
-        // dividend = 4 + 4x^2 + x^3 + x^5
-        let c1 = vec![FieldElement::from(4u64), FieldElement::zero(), FieldElement::from(4u64), FieldElement::one(), FieldElement::zero(), FieldElement::one()];
-        let dividend = Polynomial(FieldElementVector::from(c1));
-        // divisor = 1 + x^2
-        let c2 = vec![FieldElement::one(), FieldElement::zero(), FieldElement::one()];
-        let divisor = Polynomial(FieldElementVector::from(c2));
-        let quotient = Polynomial::long_division(&dividend, &divisor);
-        println!("Quotient={:?}", &quotient);
-
-        // quotient = 4 + x^3
-        assert_eq!(quotient.degree(), 3);
-        assert_eq!(quotient.0[0], FieldElement::from(4u64));
-        assert_eq!(quotient.0[1], FieldElement::zero());
-        assert_eq!(quotient.0[2], FieldElement::zero());
-        assert_eq!(quotient.0[3], FieldElement::one());
-
-        // 2x^4 - 40x^3 + 3x^2 - 56x - 80 / x - 20 = 2x^3 + 3x + 4
-        // dividend = -80 - 56x + 3x^2 - 40x^3 + 2x^4
-        let c1 = vec![-FieldElement::from(80u64), -FieldElement::from(56u64), FieldElement::from(3u64), -FieldElement::from(40u64), FieldElement::from(2u64)];
-        let dividend = Polynomial(FieldElementVector::from(c1));
-        // divisor = -20 + x
-        let c2 = vec![-FieldElement::from(20), FieldElement::one()];
-        let divisor = Polynomial(FieldElementVector::from(c2));
-        let quotient = Polynomial::long_division(&dividend, &divisor);
-        println!("Quotient={:?}", &quotient);
-
-        // quotient = 4 + 3x + 2x^3
-        assert_eq!(quotient.degree(), 3);
-        assert_eq!(quotient.0[0], FieldElement::from(4u64));
-        assert_eq!(quotient.0[1], FieldElement::from(3u64));
-        assert_eq!(quotient.0[2], FieldElement::zero());
-        assert_eq!(quotient.0[3], FieldElement::from(2u64));
-    }
-
-    #[test]
-    fn test_random_poly_long_div() {
-        // TODO: Multiply 2 random polynomials and then use the result to check long division
     }
 
     #[test]
