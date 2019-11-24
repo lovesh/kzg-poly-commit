@@ -5,6 +5,8 @@ extern crate serde;
 #[macro_use]
 extern crate serde_derive;
 
-pub mod polynomial;
+#[macro_use]
 pub mod poly_commit_dl;
+#[macro_use]
 pub mod poly_commit_ped;
+pub mod polynomial;

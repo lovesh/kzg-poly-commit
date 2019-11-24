@@ -1,6 +1,7 @@
 use std::ops::{Index, IndexMut};
 
-use amcl_wrapper::field_elem::{FieldElementVector, FieldElement};
+use amcl_wrapper::field_elem::{FieldElement, FieldElementVector};
+use std::cmp::max;
 
 /// Polynomial represented with coefficients in a vector. The ith element of the vector is the coefficient of the ith degree term.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -14,7 +15,14 @@ impl Polynomial {
     }
 
     pub fn degree(&self) -> usize {
-        self.0.len() - 1
+        // TODO: This makes fetching the coefficient ambiguous as a 0 degree polynomial will can
+        // have a coefficient for the 0th degree or it might not. Should probably adapt Index and IndexMut trait.
+        let l = self.0.len();
+        if l == 0 {
+            l
+        } else {
+            l - 1
+        }
     }
 
     /// Polynomial is zero if all coefficients are 0
@@ -32,8 +40,9 @@ impl Polynomial {
         }
     }
 
-    /// Divides 2 polynomials i.e. `dividend` / `divisor` using long division. Assumes `divisor` divides the `dividend` exactly so no remainder
-    pub fn long_division(dividend: &Self, divisor: &Self) -> Self {
+    /// Divides 2 polynomials i.e. `dividend` / `divisor` using long division.
+    /// Returns (quotient, remainder)
+    pub fn long_division(dividend: &Self, divisor: &Self) -> (Self, Self) {
         assert!(!divisor.is_zero());
         assert!(!divisor[divisor.degree()].is_zero());
 
@@ -44,41 +53,103 @@ impl Polynomial {
         let highest_degree_coeff_inv = divisor[divisor.degree()].inverse();
         let rem_degree = dividend.degree();
         let div_degree = divisor.degree();
-        let quo_degree = dividend.degree() - div_degree;
+        //let quo_degree = dividend.degree() - div_degree;
         for i in (div_degree..=rem_degree).rev() {
             if remainder[i].is_zero() {
                 quotient.push(FieldElement::zero());
-                continue
+                continue;
             }
 
             let q = &highest_degree_coeff_inv * &remainder[i];
             for j in 0..div_degree {
-                remainder[i-div_degree+j] -= &(&divisor[j] * &q);
+                remainder[i - div_degree + j] -= &(&divisor[j] * &q);
             }
             quotient.push(q);
         }
         // Remove trailing 0s since the quotient has degree `quo_degree`
-        quotient.drain(quo_degree+1..);
+        //quotient.drain(quo_degree + 1..);
         // The coefficients of the quotient polynomial were computed from highest to lowest degree.
         quotient.reverse();
-        Polynomial(FieldElementVector::from(quotient))
+        // Remainder's degree will be less than divisor's degree.
+        for _ in div_degree..=rem_degree {
+            remainder.0.pop();
+        }
+        (Polynomial(FieldElementVector::from(quotient)), remainder)
     }
 
-    /// Multiply 2 polynomials
+    /// Return product of 2 polynomials. `left` * `right`
     pub fn multiply(left: &Self, right: &Self) -> Self {
-        let mut res = Self::new(left.degree() + right.degree());
+        let mut product = Self::new(left.degree() + right.degree());
         for i in 0..=left.degree() {
             for j in 0..=right.degree() {
-                res[i+j] += &left[i] * &right[j];
+                product[i + j] += &left[i] * &right[j];
             }
         }
-        res
+        product
     }
 
-    // TODO: Add a coefficients method to avoid using self.0
+    /// Return sum of 2 polynomials. `left` + `right`
+    pub fn sum(left: &Self, right: &Self) -> Self {
+        let (sum_poly_degree, bigger_poly, smaller_poly) = if left.degree() > right.degree() {
+            (left.degree(), left, right)
+        } else {
+            (right.degree(), right, left)
+        };
+        let mut sum = Self::new(sum_poly_degree);
+        let smaller_poly_degree = smaller_poly.degree();
+        for i in 0..=sum_poly_degree {
+            // A cleaner approach would be to avoid creating `bigger_poly` and `smaller_poly` and
+            // have 2 `if`s inside the loop but that will be less efficient
+            sum[i] = bigger_poly[i].clone();
+            if i <= smaller_poly_degree {
+                sum[i] += &smaller_poly[i];
+            }
+        }
+        sum
+    }
+
+    /// Return difference of 2 polynomials. `left` - `right`
+    pub fn difference(left: &Self, right: &Self) -> Self {
+        let left_degree = left.degree();
+        let right_degree = right.degree();
+        let diff_poly_degree = max(left_degree, right_degree);
+        let mut diff = Self::new(diff_poly_degree);
+        for i in 0..=diff_poly_degree {
+            if i <= left_degree {
+                diff[i] = left[i].clone();
+            }
+            if i <= right_degree {
+                diff[i] -= &right[i];
+            }
+        }
+        diff
+    }
+
     /// Return a randomly chosen polynomial (each coefficient is randomly chosen) of degree `degree`.
     pub fn random(degree: usize) -> Self {
         Self(FieldElementVector::random(degree + 1)) // +1 for constant term
+    }
+
+    /// Create a polynomial with given roots in `roots`
+    /// i.e. (x-roots[0])*(x-roots[1])*(x-roots[2])...(x-roots[last]) given `roots`
+    pub fn from_given_roots(roots: &[FieldElement]) -> Polynomial {
+        // vector of [(x-roots[0]), (x-roots[1]), (x-roots[2]), ...]
+        let x_i = roots
+            .iter()
+            .map(|i| {
+                let mut v = FieldElementVector::with_capacity(2);
+                v.push(-i);
+                v.push(FieldElement::one());
+                Polynomial(v)
+            })
+            .collect::<Vec<Polynomial>>();
+
+        // Polynomial (x-roots[0])*(x-roots[1])*(x-roots[2])...(x-roots[last])
+        let mut poly = x_i[0].clone();
+        for i in 1..roots.len() {
+            poly = Polynomial::multiply(&poly, &x_i[i]);
+        }
+        poly
     }
 }
 
@@ -115,19 +186,25 @@ mod tests {
     fn test_poly_long_div() {
         // x^2 - 1 / x + 1 = x - 1
         // dividend = -1 + x^2
-        let c1 = vec![FieldElement::minus_one(), FieldElement::zero(), FieldElement::one()];
+        let c1 = vec![
+            FieldElement::minus_one(),
+            FieldElement::zero(),
+            FieldElement::one(),
+        ];
         let dividend = Polynomial(FieldElementVector::from(c1));
         // divisor = 1 + x
         let c2 = vec![FieldElement::one(), FieldElement::one()];
         let divisor = Polynomial(FieldElementVector::from(c2));
-        let quotient = Polynomial::long_division(&dividend, &divisor);
+        let (quotient, rem) = Polynomial::long_division(&dividend, &divisor);
         println!("Quotient={:?}", &quotient);
         // quotient = -1 + x
         assert_eq!(quotient.degree(), 1);
         assert_eq!(quotient[0], FieldElement::minus_one());
         assert_eq!(quotient[1], FieldElement::one());
 
-        let quotient = Polynomial::long_division(&dividend, &quotient);
+        assert_eq!(rem.degree(), 0);
+
+        let quotient = Polynomial::long_division(&dividend, &quotient).0;
         println!("Quotient={:?}", &quotient);
         // quotient = 1 + x
         assert_eq!(quotient.degree(), 1);
@@ -136,17 +213,23 @@ mod tests {
 
         // 2x^2 + 3x + 1 / x + 1 = 2x + 1
         // dividend = 1 + 3x + 2x^2
-        let c1 = vec![FieldElement::one(), FieldElement::from(3u64), FieldElement::from(2u64)];
+        let c1 = vec![
+            FieldElement::one(),
+            FieldElement::from(3u64),
+            FieldElement::from(2u64),
+        ];
         let dividend = Polynomial(FieldElementVector::from(c1));
         // divisor = 1 + x
         let c2 = vec![FieldElement::one(), FieldElement::one()];
         let divisor = Polynomial(FieldElementVector::from(c2));
-        let quotient = Polynomial::long_division(&dividend, &divisor);
+        let (quotient, rem) = Polynomial::long_division(&dividend, &divisor);
         println!("Quotient={:?}", &quotient);
         // quotient = 1 + 2x
         assert_eq!(quotient.degree(), 1);
         assert_eq!(quotient[0], FieldElement::one());
         assert_eq!(quotient[1], FieldElement::from(2u64));
+
+        assert_eq!(rem.degree(), 0);
 
         // 4x - 4 / x - 1 = 4
         // dividend = -4 + 4x
@@ -155,21 +238,34 @@ mod tests {
         // divisor = -1 + x
         let c2 = vec![FieldElement::minus_one(), FieldElement::one()];
         let divisor = Polynomial(FieldElementVector::from(c2));
-        let quotient = Polynomial::long_division(&dividend, &divisor);
+        let (quotient, rem) = Polynomial::long_division(&dividend, &divisor);
         println!("Quotient={:?}", &quotient);
 
         // quotient = 4
         assert_eq!(quotient.degree(), 0);
         assert_eq!(quotient[0], FieldElement::from(4u64));
 
+        assert_eq!(rem.degree(), 0);
+
         // x^5 + x^3 + 4x^2 + 4 / x^2 + 1 = x^3 + 4
         // dividend = 4 + 4x^2 + x^3 + x^5
-        let c1 = vec![FieldElement::from(4u64), FieldElement::zero(), FieldElement::from(4u64), FieldElement::one(), FieldElement::zero(), FieldElement::one()];
+        let c1 = vec![
+            FieldElement::from(4u64),
+            FieldElement::zero(),
+            FieldElement::from(4u64),
+            FieldElement::one(),
+            FieldElement::zero(),
+            FieldElement::one(),
+        ];
         let dividend = Polynomial(FieldElementVector::from(c1));
         // divisor = 1 + x^2
-        let c2 = vec![FieldElement::one(), FieldElement::zero(), FieldElement::one()];
+        let c2 = vec![
+            FieldElement::one(),
+            FieldElement::zero(),
+            FieldElement::one(),
+        ];
         let divisor = Polynomial(FieldElementVector::from(c2));
-        let quotient = Polynomial::long_division(&dividend, &divisor);
+        let (quotient, rem) = Polynomial::long_division(&dividend, &divisor);
         println!("Quotient={:?}", &quotient);
 
         // quotient = 4 + x^3
@@ -179,14 +275,22 @@ mod tests {
         assert_eq!(quotient[2], FieldElement::zero());
         assert_eq!(quotient[3], FieldElement::one());
 
+        assert_eq!(rem.degree(), 1);
+
         // 2x^4 - 40x^3 + 3x^2 - 56x - 80 / x - 20 = 2x^3 + 3x + 4
         // dividend = -80 - 56x + 3x^2 - 40x^3 + 2x^4
-        let c1 = vec![-FieldElement::from(80u64), -FieldElement::from(56u64), FieldElement::from(3u64), -FieldElement::from(40u64), FieldElement::from(2u64)];
+        let c1 = vec![
+            -FieldElement::from(80u64),
+            -FieldElement::from(56u64),
+            FieldElement::from(3u64),
+            -FieldElement::from(40u64),
+            FieldElement::from(2u64),
+        ];
         let dividend = Polynomial(FieldElementVector::from(c1));
         // divisor = -20 + x
         let c2 = vec![-FieldElement::from(20), FieldElement::one()];
         let divisor = Polynomial(FieldElementVector::from(c2));
-        let quotient = Polynomial::long_division(&dividend, &divisor);
+        let (quotient, rem) = Polynomial::long_division(&dividend, &divisor);
         println!("Quotient={:?}", &quotient);
 
         // quotient = 4 + 3x + 2x^3
@@ -195,15 +299,23 @@ mod tests {
         assert_eq!(quotient[1], FieldElement::from(3u64));
         assert_eq!(quotient[2], FieldElement::zero());
         assert_eq!(quotient[3], FieldElement::from(2u64));
+
+        assert_eq!(rem.degree(), 0);
     }
 
     #[test]
     fn test_poly_multiply() {
         // (x + 1) * (x - 1) = x^2 - 1
         // x + 1
-        let left = Polynomial(FieldElementVector::from(vec![FieldElement::one(), FieldElement::one()]));
+        let left = Polynomial(FieldElementVector::from(vec![
+            FieldElement::one(),
+            FieldElement::one(),
+        ]));
         // -1 + x
-        let right = Polynomial(FieldElementVector::from(vec![FieldElement::minus_one(), FieldElement::one()]));
+        let right = Polynomial(FieldElementVector::from(vec![
+            FieldElement::minus_one(),
+            FieldElement::one(),
+        ]));
         let product = Polynomial::multiply(&left, &right);
         // product = -1 + x^2
         assert_eq!(product.degree(), 2);
@@ -213,9 +325,15 @@ mod tests {
 
         // (x + 1) * (2x + 1) = 2x^2 + 3x + 1
         // 1 + x
-        let left = Polynomial(FieldElementVector::from(vec![FieldElement::one(), FieldElement::one()]));
+        let left = Polynomial(FieldElementVector::from(vec![
+            FieldElement::one(),
+            FieldElement::one(),
+        ]));
         // 1 + 2x
-        let right = Polynomial(FieldElementVector::from(vec![FieldElement::one(), FieldElement::from(2u64)]));
+        let right = Polynomial(FieldElementVector::from(vec![
+            FieldElement::one(),
+            FieldElement::from(2u64),
+        ]));
         let product = Polynomial::multiply(&left, &right);
         // product = 2x^2 + 3x + 1
         assert_eq!(product.degree(), 2);
@@ -225,9 +343,18 @@ mod tests {
 
         // (x^2 + 1) * (x^3 + 4) = x^5 + x^3 + 4x^2 + 4
         // 1 + x^2
-        let left = Polynomial(FieldElementVector::from(vec![FieldElement::one(), FieldElement::zero(), FieldElement::one()]));
+        let left = Polynomial(FieldElementVector::from(vec![
+            FieldElement::one(),
+            FieldElement::zero(),
+            FieldElement::one(),
+        ]));
         // 4 + x^3
-        let right = Polynomial(FieldElementVector::from(vec![FieldElement::from(4u64), FieldElement::zero(), FieldElement::zero(), FieldElement::one()]));
+        let right = Polynomial(FieldElementVector::from(vec![
+            FieldElement::from(4u64),
+            FieldElement::zero(),
+            FieldElement::zero(),
+            FieldElement::one(),
+        ]));
         let product = Polynomial::multiply(&left, &right);
         // 4 + 4x^2 + x^3 + x^5
         assert_eq!(product.degree(), 5);
@@ -240,22 +367,153 @@ mod tests {
     }
 
     #[test]
+    fn test_poly_rem() {
+        // x^2 - 5 / x + 1 => q = x - 1, r = -4
+        // dividend = -5 + x^2
+        let c1 = vec![
+            -FieldElement::from(5u64),
+            FieldElement::zero(),
+            FieldElement::one(),
+        ];
+        let dividend = Polynomial(FieldElementVector::from(c1));
+        // divisor = 1 + x
+        let c2 = vec![FieldElement::one(), FieldElement::one()];
+        let divisor = Polynomial(FieldElementVector::from(c2));
+        let (quotient, remainder) = Polynomial::long_division(&dividend, &divisor);
+        // quotient = -1 + x
+        assert_eq!(quotient.degree(), 1);
+        assert_eq!(quotient[0], FieldElement::minus_one());
+        assert_eq!(quotient[1], FieldElement::one());
+
+        // remainder = -4
+        assert_eq!(remainder.degree(), 0);
+        assert_eq!(remainder[0], -FieldElement::from(4u64));
+
+        // x^5 + 2x^3 + 4x^2 + 4 / x^2 + 1 = q = x^3 + x + 4, r = -x
+        // dividend = 4 + 4x^2 + 2x^3 + x^5
+        let c1 = vec![
+            FieldElement::from(4u64),
+            FieldElement::zero(),
+            FieldElement::from(4u64),
+            FieldElement::from(2u64),
+            FieldElement::zero(),
+            FieldElement::one(),
+        ];
+        let dividend = Polynomial(FieldElementVector::from(c1));
+        // divisor = 1 + x^2
+        let c2 = vec![
+            FieldElement::one(),
+            FieldElement::zero(),
+            FieldElement::one(),
+        ];
+        let divisor = Polynomial(FieldElementVector::from(c2));
+        let (quotient, remainder) = Polynomial::long_division(&dividend, &divisor);
+
+        // quotient = 4 + x^3
+        assert_eq!(quotient.degree(), 3);
+        assert_eq!(quotient[0], FieldElement::from(4u64));
+        assert_eq!(quotient[1], FieldElement::one());
+        assert_eq!(quotient[2], FieldElement::zero());
+        assert_eq!(quotient[3], FieldElement::one());
+
+        assert_eq!(remainder.degree(), 1);
+        assert_eq!(remainder[0], FieldElement::zero());
+        assert_eq!(remainder[1], FieldElement::minus_one());
+    }
+
+    #[test]
+    fn test_random_poly_sum_difference() {
+        // Test sum and difference of randomly generated polynomials.
+        let num_test_cases = 100;
+        let mut rng = rand::thread_rng();
+        for _ in 0..num_test_cases {
+            let left = Polynomial::random(rng.gen_range(1, 100));
+            let right = Polynomial::random(rng.gen_range(1, 100));
+            let sum = Polynomial::sum(&left, &right);
+
+            // sum is commutative
+            assert_eq!(sum, Polynomial::sum(&right, &left));
+
+            // sum - left == right
+            let mut diff_1 = Polynomial::difference(&sum, &right);
+            // Since degree of difference is same as degree of `sum` but the higher degree coeffs
+            // of difference will be 0. Remove those 0s (after checking that they really are 0) and
+            // then do equality comparison with `left`
+            while diff_1.degree() > left.degree() {
+                let c = diff_1.0.pop().unwrap();
+                assert!(c.is_zero());
+            }
+            assert_eq!(diff_1, left);
+
+            // sum - right == left
+            let mut diff_2 = Polynomial::difference(&sum, &left);
+            // Since degree of difference is same as degree of `sum` but the higher degree coeffs
+            // of difference will be 0. Remove those 0s (after checking that they really are 0) and
+            // then do equality comparison with `right`
+            while diff_2.degree() > right.degree() {
+                let c = diff_2.0.pop().unwrap();
+                assert!(c.is_zero());
+            }
+            assert_eq!(diff_2, right);
+        }
+    }
+
+    #[test]
     fn test_random_poly_long_div() {
         // Multiply 2 random polynomials and then use the result to check long division
-        let count_test_cases = 100;
+        let num_test_cases = 100;
         let mut rng = rand::thread_rng();
-        for _ in 0..count_test_cases {
+        for _ in 0..num_test_cases {
             let left = Polynomial::random(rng.gen_range(1, 100));
             let right = Polynomial::random(rng.gen_range(1, 100));
             let product = Polynomial::multiply(&left, &right);
 
             // product / left == right
-            let quotient_1 = Polynomial::long_division(&product, &left);
+            let quotient_1 = Polynomial::long_division(&product, &left).0;
             assert_eq!(quotient_1, right);
 
             // product / right == left
-            let quotient_2 = Polynomial::long_division(&product, &right);
+            let quotient_2 = Polynomial::long_division(&product, &right).0;
             assert_eq!(quotient_2, left);
         }
+    }
+
+    #[test]
+    fn test_random_poly_long_div_remainder() {
+        // Divide 2 random polynomials and check that the quotient and remainder are correct using
+        // the relation dividend = divisor * quotient + remainder
+        let num_test_cases = 100;
+        let mut rng = rand::thread_rng();
+        for _ in 0..num_test_cases {
+            let d_1: usize = rng.gen_range(1, 100);
+            let d_2: usize = rng.gen_range(1, 100);
+            let (dividend, divisor) = if d_1 > d_2 {
+                (Polynomial::random(d_1), Polynomial::random(d_2))
+            } else {
+                (Polynomial::random(d_2), Polynomial::random(d_1))
+            };
+            // dividend / divisor => quotient and remainder
+            let (quotient, remainder) = Polynomial::long_division(&dividend, &divisor);
+
+            // dividend = divisor * quotient + remainder
+
+            // div_quo = divisor * quotient
+            let div_quo = Polynomial::multiply(&divisor, &quotient);
+            // expected_dividend = div_quo + remainder
+            let expected_dividend = Polynomial::sum(&div_quo, &remainder);
+            assert_eq!(expected_dividend, dividend);
+
+            /*if remainder.degree() < quotient.degree() {
+                // dividend / quotient => divisor and remainder
+                let (divisor_1, remainder_1) = Polynomial::long_division(&dividend, &quotient);
+                assert_eq!(divisor_1, divisor);
+                assert_eq!(remainder_1, remainder);
+            }*/
+        }
+    }
+
+    #[test]
+    fn test_poly_from_given_roots() {
+        // TODO: Check resulting polynomial is of correct degree and polynomial becomes 0 at each root
     }
 }
