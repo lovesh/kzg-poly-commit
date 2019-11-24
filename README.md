@@ -15,10 +15,10 @@ For more details look at the code comments.
 
 For batch openings, look at functions `create_witness_for_batch` and `verify_eval_for_batch` in both `PolyCommit_DL` and `PolyCommit_Ped`. 
 Run tests `timing_batch_witness_random_poly` in both `PolyCommit_DL` and `PolyCommit_Ped` in release mode to see the time it takes for 
-creating and verifying the witness for various degree polynomials and for various batch sizes.  
+creating and verifying the witness for various degree polynomials and for various batch sizes. Those tests will also do witness creation
+and verification individually as well and compare the timing with batched execution.   
 
 ## TODO:
-- Compare timing for batch opening vs independent openings 
 - Error handling. Start by converting asserts into errors.
 - Address TODOs in code
 - More documentation.

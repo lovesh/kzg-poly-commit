@@ -289,7 +289,7 @@ impl PolyCommit_Ped {
 mod tests {
     use super::*;
     use rand::Rng;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn test_commit_verify() {
@@ -394,14 +394,34 @@ mod tests {
                     .map(|_| FieldElement::random())
                     .collect::<Vec<FieldElement>>();
 
-                let start_proving = Instant::now();
+                let mut proving_time = Duration::new(0, 0);
+                let mut verifying_time = Duration::new(0, 0);
+                for i in &inputs {
+                    let start = Instant::now();
+                    let (eval_i, eval_i_rand, witness) =
+                        PolyCommit_Ped::create_witness(&poly, &rand_poly, &i, &pk);
+                    proving_time += start.elapsed();
+
+                    let start = Instant::now();
+                    assert!(PolyCommit_Ped::verify_eval(
+                        &commitment,
+                        &i,
+                        &eval_i,
+                        &eval_i_rand,
+                        &witness,
+                        &pk
+                    ));
+                    verifying_time += start.elapsed();
+                }
+
+                let proving_batch = Instant::now();
                 let (rem_poly, rem_rand_poly, witness) = PolyCommit_Ped::create_witness_for_batch(
                     &poly,
                     &rand_poly,
                     inputs.as_slice(),
                     &pk,
                 );
-                println!("PolyCommit_Ped: For degree {} polynomial, creating witness for batch size {} takes {:?}", degree, batch_size, start_proving.elapsed());
+                println!("PolyCommit_Ped: For degree {} polynomial, creating witness for batch size {} takes {:?}. Creating witness individually takes {:?}", degree, batch_size, proving_batch.elapsed(), proving_time);
 
                 for i in &inputs {
                     // Check that the poly and rem_poly have same values at all `i`
@@ -410,7 +430,7 @@ mod tests {
                     assert_eq!(rand_poly.eval(i), rem_rand_poly.eval(i));
                 }
 
-                let start_verifying = Instant::now();
+                let verifying_batch = Instant::now();
                 assert!(PolyCommit_Ped::verify_eval_for_batch(
                     &commitment,
                     inputs.as_slice(),
@@ -419,7 +439,7 @@ mod tests {
                     &witness,
                     &pk
                 ));
-                println!("PolyCommit_Ped: For degree {} polynomial, verifying witness for batch size {} takes {:?}", degree, batch_size, start_verifying.elapsed());
+                println!("PolyCommit_Ped: For degree {} polynomial, verifying witness for batch size {} takes {:?}. Verifying witness individually takes {:?}", degree, batch_size, verifying_batch.elapsed(), verifying_time);
             }
         }
     }

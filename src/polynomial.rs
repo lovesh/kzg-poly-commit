@@ -514,6 +514,17 @@ mod tests {
 
     #[test]
     fn test_poly_from_given_roots() {
-        // TODO: Check resulting polynomial is of correct degree and polynomial becomes 0 at each root
+        // Check resulting polynomial is of correct degree and polynomial becomes 0 at each root
+        let num_test_cases = 100;
+        let mut rng = rand::thread_rng();
+        for _ in 0..num_test_cases {
+            let num_roots = rng.gen_range(2, 30);
+            let roots = FieldElementVector::random(num_roots);
+            let poly = Polynomial::from_given_roots(roots.as_slice());
+            assert_eq!(poly.degree(), num_roots);
+            for r in roots {
+                assert_eq!(poly.eval(&r), FieldElement::zero())
+            }
+        }
     }
 }
