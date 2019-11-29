@@ -35,8 +35,16 @@ impl Polynomial {
         if x.is_zero() {
             self[0].clone()
         } else {
-            let exp = FieldElementVector::new_vandermonde_vector(x, self.degree() + 1);
-            self.0.inner_product(&exp).unwrap()
+            // Use Horner's method https://en.wikipedia.org/wiki/Horner%27s_method
+            // p(x) = a_0 + a_1*x + a_2*x^2 + a_3*x^3 + a_4*x^4 + ...
+            // p(x) = a_0 + x*(a_1 + x*(a_2 + x*(a_3 + x*(a_4 + ... x*(a_{n-1} + x*a_n))))..
+            // Reading coefficients from higher to lower degrees.
+            let mut res = self.0[self.0.len()-1].clone();     // a_n
+            for i in (0..=self.0.len()-2).rev() {
+                // in each iteration, multiply `res` with `x` and add the coefficient for ith degree, a_i
+                res = &self.0[i] + &(&res * x);
+            }
+            res
         }
     }
 
